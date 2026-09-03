@@ -1126,8 +1126,6 @@ void EvaluateAfterUpscale(ID3D12GraphicsCommandList* cmdList, NVSDK_NGX_Paramete
     if (g_capture.isActive() && !g_capture.readyToWrite())
     {
         g_capture.setGuides(device, { modelInput, depthIn, motionIn });
-        g_capture.setScalar("mvScaleX", g_nr.guideMvScaleX * mvToWork);
-        g_capture.setScalar("mvScaleY", g_nr.guideMvScaleY * mvToWork);
         g_capture.setScalar("depthInverted", g_nr.guideDepthInverted ? 1.0 : 0.0);
         g_capture.setScalar("guideWidth", guideWidth);
         g_capture.setScalar("guideHeight", guideHeight);
@@ -1137,6 +1135,12 @@ void EvaluateAfterUpscale(ID3D12GraphicsCommandList* cmdList, NVSDK_NGX_Paramete
 
     // The vectors were scaled to full-frame pixels; the image the model reprojects is the working size.
     const float mvToWork = width != 0 ? (float) workWidth / (float) width : 1.0f;
+
+    if (g_capture.isActive() && !g_capture.readyToWrite())
+    {
+        g_capture.setScalar("mvScaleX", g_nr.guideMvScaleX * mvToWork);
+        g_capture.setScalar("mvScaleY", g_nr.guideMvScaleY * mvToWork);
+    }
 
     SetExtras(cfg, nullptr, nullptr, 0, 0, 0, 0);
 
