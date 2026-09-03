@@ -34,7 +34,13 @@ struct Shot
     unsigned long long bytes = 0;
 };
 
-// Captures a run of consecutive frames of two images at once.
+// Captures a run of consecutive frames of several images at once.
+//
+// Capture v2: alongside the before/after pair, the model's actual inputs are recorded -- the
+// colour the model was shown (post colour-transform), the depth guide, and the motion vector
+// guide. Those three are what a reimplementation needs to reproduce the edit; before/after alone
+// leaves the guides to be guessed, and they steer the model spatially. Scalar parameters that
+// reach the model are written to the manifest alongside.
 class FrameCapture
 {
   public:
@@ -87,10 +93,50 @@ class FrameCapture
 
         copy(cmd, before, beforeState, beforeShots_[captured_]);
         copy(cmd, after, afterState, afterShots_[captured_]);
+
+        // Guides ride along on the same frame index. They are optional: an older call site that
+        // knows nothing about them still produces a valid v1 capture.
+        if (captured_ < guideShots_[0].size())
+        {
+            for (size_t g = 0; g < guideShots_.size(); ++g)
+                if (guideShots_[g][captured_].readback != nullptr)
+                    copy(cmd, guideResources_[g], guideStates_[g], guideShots_[g][captured_]);
+        }
+
         ++captured_;
 
         if (captured_ >= wanted_)
             ready_ = true;
+    }
+
+    // Declares the guide resources to record alongside before/after, and allocates their readback
+    // buffers. Must be called before the first record() of a run, since allocation happens once.
+    // All guides are copied from NON_PIXEL_SHADER_RESOURCE, the state every model input is left in.
+    void setGuides(ID3D12Device* device, const std::vector<ID3D12Resource*>& resources)
+    {
+        // Idempotent within a run: the same resources arrive every frame, and re-allocating would
+        // leak the buffers already holding earlier frames of the run.
+        if (!guideShots_.empty())
+            return;
+
+        guideResources_ = resources;
+        guideStates_.assign(resources.size(), D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+        guideShots_.resize(resources.size());
+
+        for (size_t g = 0; g < resources.size(); ++g)
+        {
+            if (resources[g] == nullptr)
+                continue;
+
+            guideShots_[g].resize(wanted_);
+
+            D3D12_RESOURCE_DESC desc = resources[g]->GetDesc();
+            desc.Format = TypedForCopy(desc.Format);
+            guideDescs_.push_back(desc);
+
+            for (unsigned int i = 0; i < wanted_; ++i)
+                alloc(device, desc, guideShots_[g][i]);
+        }
     }
 
     // True once every frame has been copied and the GPU has been waited for. The caller does the waiting,
@@ -122,6 +168,12 @@ class FrameCapture
         {
             dump(directory, "before", i, beforeShots_[i]);
             dump(directory, "after", i, afterShots_[i]);
+
+            // v2 guide images. Named for the model input each one carries.
+            static const char* guideNames[] = { "model_input", "depth", "motion" };
+            for (size_t g = 0; g < guideShots_.size() && g < 3; ++g)
+                if (i < guideShots_[g].size() && guideShots_[g][i].readback != nullptr)
+                    dump(directory, guideNames[g], i, guideShots_[g][i]);
         }
 
         writeManifest(directory);
@@ -139,12 +191,25 @@ class FrameCapture
             if (s.readback != nullptr)
                 s.readback->Release();
 
+        for (auto& shots : guideShots_)
+            for (auto& s : shots)
+                if (s.readback != nullptr)
+                    s.readback->Release();
+
         beforeShots_.clear();
         afterShots_.clear();
+        guideShots_.clear();
+        guideResources_.clear();
+        guideStates_.clear();
+        guideDescs_.clear();
+        scalars_.clear();
         active_ = false;
         ready_ = false;
         captured_ = 0;
     }
+
+    // Scalar parameters to write into the manifest: exactly what the model was told this run.
+    void setScalar(const std::string& name, double value) { scalars_.push_back({ name, value }); }
 
   private:
     bool ensure(ID3D12Device* device, ID3D12Resource* before, ID3D12Resource* after)
@@ -329,12 +394,33 @@ class FrameCapture
             std::fprintf(f, "\nbefore_NN.raw is the frame as the upscaler produced it.\n");
             std::fprintf(f, "after_NN.raw is the same frame once the model's edit was applied.\n");
             std::fprintf(f, "Consecutive frames, same run, so the pair is a control.\n");
+
+            if (!guideDescs_.empty())
+            {
+                static const char* guideNames[] = { "model_input", "depth", "motion" };
+                for (size_t g = 0; g < guideDescs_.size() && g < 3; ++g)
+                    std::fprintf(f, "%s width %llu height %u format %d rowPitch %u\n",
+                                 guideNames[g], (unsigned long long) guideDescs_[g].Width,
+                                 guideDescs_[g].Height, (int) guideDescs_[g].Format,
+                                 guideShots_[g].empty() ? 0 : guideShots_[g][0].layout.Footprint.RowPitch);
+                std::fprintf(f, "model_input_NN.raw is the colour the model was shown (post transform).\n");
+                std::fprintf(f, "depth_NN.raw and motion_NN.raw are the guides the model received.\n");
+            }
+
+            for (const auto& s : scalars_)
+                std::fprintf(f, "param %s %g\n", s.first.c_str(), s.second);
+
             std::fclose(f);
         }
     }
 
     std::vector<Shot> beforeShots_;
     std::vector<Shot> afterShots_;
+    std::vector<std::vector<Shot>> guideShots_;
+    std::vector<ID3D12Resource*> guideResources_;
+    std::vector<D3D12_RESOURCE_STATES> guideStates_;
+    std::vector<D3D12_RESOURCE_DESC> guideDescs_;
+    std::vector<std::pair<std::string, double>> scalars_;
     D3D12_RESOURCE_DESC beforeDesc_ = {};
     D3D12_RESOURCE_DESC afterDesc_ = {};
     unsigned int wanted_ = 0;

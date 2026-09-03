@@ -1121,6 +1121,20 @@ void EvaluateAfterUpscale(ID3D12GraphicsCommandList* cmdList, NVSDK_NGX_Paramete
         return;
     }
 
+    // Capture v2: tell the capture what the model will actually be shown, so the run records the
+    // inputs as well as the before/after pair. Declared each frame; allocation happens once per run.
+    if (g_capture.isActive() && !g_capture.readyToWrite())
+    {
+        g_capture.setGuides(device, { modelInput, depthIn, motionIn });
+        g_capture.setScalar("mvScaleX", g_nr.guideMvScaleX * mvToWork);
+        g_capture.setScalar("mvScaleY", g_nr.guideMvScaleY * mvToWork);
+        g_capture.setScalar("depthInverted", g_nr.guideDepthInverted ? 1.0 : 0.0);
+        g_capture.setScalar("guideWidth", guideWidth);
+        g_capture.setScalar("guideHeight", guideHeight);
+        g_capture.setScalar("workWidth", workWidth);
+        g_capture.setScalar("workHeight", workHeight);
+    }
+
     // The vectors were scaled to full-frame pixels; the image the model reprojects is the working size.
     const float mvToWork = width != 0 ? (float) workWidth / (float) width : 1.0f;
 
