@@ -290,8 +290,6 @@ class FrameCapture
             return DXGI_FORMAT_R8G8B8A8_UNORM;
         case DXGI_FORMAT_B8G8R8A8_TYPELESS:
             return DXGI_FORMAT_B8G8R8A8_UNORM;
-        case DXGI_FORMAT_R11G11B10_TYPELESS:
-            return DXGI_FORMAT_R11G11B10_FLOAT;
         default:
             return f;
         }
