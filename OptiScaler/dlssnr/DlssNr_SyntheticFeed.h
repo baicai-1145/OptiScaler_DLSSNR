@@ -134,15 +134,19 @@ inline ID3D12Resource* Feed(ID3D12GraphicsCommandList* cmd, ID3D12Device* device
     // UAV on every later call (that is where the previous frame's resolve left it).
     if (g_feed.served != 0)
     {
-        D3D12_RESOURCE_BARRIER toCopy { { g_feed.texture, D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES,
-                                          D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
-                                          D3D12_RESOURCE_STATE_COPY_DEST } };
+        D3D12_RESOURCE_BARRIER toCopy {};
+        toCopy.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+        toCopy.Transition.pResource = g_feed.texture;
+        toCopy.Transition.StateBefore = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
+        toCopy.Transition.StateAfter = D3D12_RESOURCE_STATE_COPY_DEST;
         cmd->ResourceBarrier(1, &toCopy);
     }
     cmd->CopyTextureRegion(&dst, 0, 0, 0, &src, nullptr);
-    D3D12_RESOURCE_BARRIER toUav { { g_feed.texture, D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES,
-                                    D3D12_RESOURCE_STATE_COPY_DEST,
-                                    D3D12_RESOURCE_STATE_UNORDERED_ACCESS } };
+    D3D12_RESOURCE_BARRIER toUav {};
+    toUav.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+    toUav.Transition.pResource = g_feed.texture;
+    toUav.Transition.StateBefore = D3D12_RESOURCE_STATE_COPY_DEST;
+    toUav.Transition.StateAfter = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
     cmd->ResourceBarrier(1, &toUav);
     ++g_feed.served;
     return g_feed.texture;
