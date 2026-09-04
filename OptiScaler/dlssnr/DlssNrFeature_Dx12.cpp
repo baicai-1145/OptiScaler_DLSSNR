@@ -1062,6 +1062,23 @@ void EvaluateAfterUpscale(ID3D12GraphicsCommandList* cmdList, NVSDK_NGX_Paramete
     // away first leaves it nothing to give back.
     const float whitePoint = cfg.DlssNrWhitePointScale.value_or_default();
 
+    // Capture v3: everything the resolve composition used, so the raw model output can
+    // be rolled forward to "after" offline and the composition itself verified.
+    if (g_capture.isActive() && !g_capture.readyToWrite())
+    {
+        g_capture.setScalar("intensity", cfg.DlssNrIntensity.value_or_default());
+        g_capture.setScalar("style", (double) cfg.DlssNrStyle.value_or_default());
+        g_capture.setScalar("localStructure", cfg.DlssNrLocalStructure.value_or_default());
+        g_capture.setScalar("localTone", cfg.DlssNrLocalTone.value_or_default());
+        g_capture.setScalar("skinStructure", cfg.DlssNrSkinStructure.value_or_default());
+        g_capture.setScalar("autoMask", cfg.DlssNrAutoMask.value_or_default() ? 1.0 : 0.0);
+        g_capture.setScalar("whitePoint", whitePoint);
+        g_capture.setScalar("transferStrength", cfg.DlssNrTransferStrength.value_or_default());
+        g_capture.setScalar("colourStrength", cfg.DlssNrColourStrength.value_or_default());
+        g_capture.setScalar("maxRatio", cfg.DlssNrMaxRatio.value_or_default());
+        g_capture.setScalar("isHdrBuffer", isHdrBuffer ? 1.0 : 0.0);
+    }
+
     if (g_gpuTime == nullptr)
         g_gpuTime = std::make_unique<GpuTime_Dx12>(device);
 
@@ -1170,6 +1187,9 @@ void EvaluateAfterUpscale(ID3D12GraphicsCommandList* cmdList, NVSDK_NGX_Paramete
         return;
     }
 
+    // Capture v3: snapshot before the evaluate consumes it (evaluate sets it false).
+    const bool wasResetThisFrame = g_nr.reset;
+
     const int result = g_nr.evaluate(
         cmdList, g_nr.feature, g_nr.capabilityParams, modelInput, depthIn, motionIn, g_nr.output,
         workWidth, workHeight, guideWidth, guideHeight, g_nr.guideDepthInverted ? 1 : 0,
@@ -1246,22 +1266,28 @@ void EvaluateAfterUpscale(ID3D12GraphicsCommandList* cmdList, NVSDK_NGX_Paramete
                 D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
         g_compose->Dispatch(cmdList, resolveParams, modelInput, g_nr.output, g_nr.hdrCopy, motionIn,
                             nullptr, target, nullptr);
-        Barrier(cmdList, g_nr.output, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
-                D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
 
         // On-demand capture works in this path too: the staging copy still holds the frame as the
         // upscaler produced it, and the edited frame is the output itself. The write happens a few
         // frames later, once the GPU is certainly past these copies -- this path has no fence of its
         // own.
+        //
+        // v3: record runs while g_nr.output is still in SRV (the resolve just read it);
+        // record()'s copy barriers leave it in SRV, and the barrier below moves it to UAV
+        // exactly as it did before, so the non-capture path is unchanged.
         if (g_capture.isActive())
         {
             g_capture.record(cmdList, device, g_nr.colorCopy,
-                             D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, target,
-                             D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+                             D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, g_nr.output,
+                             g_nr.hdrCopy, target, D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
+                             g_frames, wasResetThisFrame ? 1 : 0);
 
             if (g_capture.readyToWrite() && g_captureWriteAtFrame == 0)
                 g_captureWriteAtFrame = g_frames + 8;
         }
+
+        Barrier(cmdList, g_nr.output, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
+                D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
     }
     else
     {
