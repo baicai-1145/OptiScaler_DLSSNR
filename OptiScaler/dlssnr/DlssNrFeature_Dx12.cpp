@@ -7,6 +7,7 @@
 
 #include "DlssNr_Codec.h"
 #include "DlssNr_Capture.h"
+#include "DlssNr_SyntheticFeed.h"
 #include "DlssNr_Proxy.h"
 
 #include <shaders/dlssnr/DlssNr_Dx12.h>
@@ -1085,6 +1086,23 @@ void EvaluateAfterUpscale(ID3D12GraphicsCommandList* cmdList, NVSDK_NGX_Paramete
     if (g_gpuTime != nullptr)
         g_gpuTime->Start(cmdList);
 
+    // Route A oracle probe: swap the game frame for a synthetic one before the encode.
+    // Everything downstream (encode, model, resolve, capture) is unaware; the capture
+    // manifest gets probe=1 so the frames can never be mistaken for gameplay.
+    bool probing = false;
+    {
+        namespace sf = DlssNr::SyntheticFeed;
+        if (sf::EnsureLoaded(width, height))
+        {
+            ID3D12Resource* feed = sf::Feed(cmdList, device, desc.Format);
+            if (feed != nullptr)
+            {
+                target = feed;
+                probing = true;
+            }
+        }
+    }
+
     DlssNrConstants encodeParams {};
     encodeParams.Mode = DlssNrMode_Encode;
     // A frame that is already display-referred is handed over untouched: the encode becomes a copy and
@@ -1144,6 +1162,7 @@ void EvaluateAfterUpscale(ID3D12GraphicsCommandList* cmdList, NVSDK_NGX_Paramete
     {
         g_capture.setGuides(device, { modelInput, depthIn, motionIn });
         g_capture.setScalar("depthInverted", g_nr.guideDepthInverted ? 1.0 : 0.0);
+        g_capture.setScalar("probe", probing ? 1.0 : 0.0);
         g_capture.setScalar("guideWidth", guideWidth);
         g_capture.setScalar("guideHeight", guideHeight);
         g_capture.setScalar("workWidth", workWidth);
